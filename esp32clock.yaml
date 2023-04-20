@@ -1,0 +1,137 @@
+substitutions:
+  device_name: esp32clock
+esphome:
+  name: ${device_name}
+  
+esp32:
+  board: wemos_d1_mini32
+  framework:
+    type: arduino
+
+
+globals:
+  id: time_sync_done
+  type: bool
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret encryption_key
+
+ota:
+  password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: ${device_name}
+    password: !secret wifi_password
+
+captive_portal:
+
+esp32_ble_tracker:
+bluetooth_proxy:
+
+binary_sensor:
+  - platform: homeassistant
+    id: clock_night_mode
+    entity_id: schedule.clock_night_mode
+
+sensor:
+  - platform: homeassistant
+    id: cgdk2_temperature
+    entity_id: "sensor.cgdk2guest_d32d_temperature"
+  - platform: homeassistant
+    id: outside_temp
+    entity_id: "sensor.outside_temp"
+
+font:
+  - file: "fonts/basis33.ttf"
+    id: digit_font
+    size: 16
+    glyphs: "0123456789 "
+  - file: "fonts/basis33.ttf"
+    id: digit_font15
+    size: 15
+    glyphs: ": ."
+
+spi:
+  clk_pin: GPIO27
+  mosi_pin: GPIO32
+
+
+time:
+  - platform: sntp
+    id: sntp_time
+    on_time_sync:
+      then:
+        lambda: |-
+          id(time_sync_done) = true;
+    
+    
+display:
+  - platform: max7219digit
+    cs_pin: GPIO25
+    num_chips: 4
+    intensity: 0
+    rotate_chip: 180
+    reverse_enable: true
+    lambda: |-
+          if(!id(time_sync_done))
+          {
+            it.print(0, 5, id(digit_font15), ". . . . . . .");
+            it.invert_on_off(true);
+            return;
+          }
+          it.invert_on_off(false);
+          auto time = id(sntp_time).now();
+          bool is_night_mode = id(clock_night_mode).state;
+          static int clock_should_blink = true;
+          it.intensity(is_night_mode ? 0 : 5);
+              
+          it.strftime(0, 5, id(digit_font), TextAlign::CENTER_LEFT, "%H", time);
+          
+          if(is_night_mode || clock_should_blink)
+          {
+              it.strftime(12, 4, id(digit_font15), TextAlign::CENTER_LEFT, ":", time); 
+          }
+          it.strftime(17, 5, id(digit_font), TextAlign::CENTER_LEFT, "%M", time);
+          clock_should_blink = !clock_should_blink;
+
+  - platform: max7219
+    cs_pin: GPIO4
+    num_chips: 5 # 5 because it is on the same SPI bus with max7219digit
+    intensity: 0
+    update_interval: 1.5s
+    lambda: |-
+      static bool temp_outside = true;
+      static int temp_mode_time = 0;
+      auto sens = temp_outside ? id(outside_temp) : id(cgdk2_temperature);
+      char text[7] = " --";
+
+      if(!isnan(sens->state))
+      {
+        sprintf(text, "%5.1f", sens->state);
+      }
+
+      it.set_intensity(id(clock_night_mode).state ? 0 : 5);
+      if(temp_outside)
+        it.printf(0, "  o%2s", text); //#show outside temp
+      else
+        it.printf(0, "  h%2s", text); //#show room temp
+        
+      if(temp_mode_time > 2)//#switch to inside/outside sensor
+      {
+        temp_outside = !temp_outside;
+        temp_mode_time = 0;
+      }
+      temp_mode_time++;
+      
+
+external_components:
+  - source: github://voed/esphome@dev
+    components: [ max7219digit ]
+
